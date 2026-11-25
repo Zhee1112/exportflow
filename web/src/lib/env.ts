@@ -10,6 +10,12 @@ export interface Network {
   chain: Chain;
   /** Your Checkout on this network, if you deployed one. */
   checkout?: Address;
+  /** ExportFlow escrow (Escrow.sol) on this network. */
+  escrow?: Address;
+  /** Session-key policy (SessionPolicy.sol) on this network. */
+  sessionPolicy?: Address;
+  /** Document hash registry (DocRegistry.sol) on this network. */
+  docRegistry?: Address;
   /** Only scan events from this block onward on the Activity page. */
   deployBlock?: bigint;
   /** Explorer links only make sense on the real testnet. */
@@ -26,6 +32,9 @@ const all: Record<NetworkKey, Network> = {
     label: "Aevum testnet",
     chain: aevumTestnet,
     checkout: address(process.env.NEXT_PUBLIC_CHECKOUT_AEVUM),
+    escrow: address(process.env.NEXT_PUBLIC_ESCROW_AEVUM),
+    sessionPolicy: address(process.env.NEXT_PUBLIC_SESSION_POLICY_AEVUM),
+    docRegistry: address(process.env.NEXT_PUBLIC_DOC_REGISTRY_AEVUM),
     deployBlock: block(process.env.NEXT_PUBLIC_DEPLOY_BLOCK_AEVUM),
     hasExplorer: true,
   },
@@ -34,6 +43,9 @@ const all: Record<NetworkKey, Network> = {
     label: "Local fork",
     chain: aevumFork,
     checkout: address(process.env.NEXT_PUBLIC_CHECKOUT_FORK),
+    escrow: address(process.env.NEXT_PUBLIC_ESCROW_FORK),
+    sessionPolicy: address(process.env.NEXT_PUBLIC_SESSION_POLICY_FORK),
+    docRegistry: address(process.env.NEXT_PUBLIC_DOC_REGISTRY_FORK),
     deployBlock: block(process.env.NEXT_PUBLIC_DEPLOY_BLOCK_FORK),
     hasExplorer: false,
   },
@@ -42,6 +54,9 @@ const all: Record<NetworkKey, Network> = {
     label: "Local anvil",
     chain: localAnvil,
     checkout: address(process.env.NEXT_PUBLIC_CHECKOUT_LOCAL),
+    escrow: address(process.env.NEXT_PUBLIC_ESCROW_LOCAL),
+    sessionPolicy: address(process.env.NEXT_PUBLIC_SESSION_POLICY_LOCAL),
+    docRegistry: address(process.env.NEXT_PUBLIC_DOC_REGISTRY_LOCAL),
     deployBlock: undefined,
     hasExplorer: false,
   },

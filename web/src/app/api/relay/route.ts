@@ -8,22 +8,27 @@ import {
   isHex,
   parseSignature,
   parseUnits,
+  type Address,
   type Hex,
 } from "viem";
 import { nonceManager, privateKeyToAccount, type PrivateKeyAccount } from "viem/accounts";
 import { aevumFork, checkoutAbi, isAnvilAccount, localAnvil, TUSD8_DECIMALS } from "@aevum-kit/aevum";
 import { defaultNetwork, networkByChainId, type Network } from "@/lib/env";
 import { explain } from "@/lib/errors";
+import { escrowAbi } from "@/lib/exportflow";
 import { priceOf } from "@/lib/order";
 
 /**
- * The relayer behind "Gasless" checkout. The buyer only signs; this route submits
- * Checkout.payWithAuthorization and pays the gas from RELAYER_PRIVATE_KEY.
+ * The relayer behind "Gasless" checkout and "Gasless" escrow funding. The buyer only
+ * signs; this route submits Checkout.payWithAuthorization or Escrow.fundWithAuthorization
+ * and pays the gas from RELAYER_PRIVATE_KEY.
  *
  * Anyone on the internet can call this route, and every transaction it sends costs YOUR gas.
  * The rails, in the order they run:
- *  1. Only YOUR Checkout, only payWithAuthorization. It never forwards arbitrary calls.
- *  2. Only the price your app set for that order (priceOf). Dust payments to burn gas are refused.
+ *  1. Only YOUR contracts, only payWithAuthorization / fundWithAuthorization. It never
+ *     forwards arbitrary calls.
+ *  2. Only the price your app set for that order (priceOf) — or, for the escrow, the total
+ *     read back from the chain itself. Dust payments to burn gas are refused.
  *  3. Not already paid, and not already being submitted.
  *  4. Simulated first, so a bad or expired signature costs nothing.
  *  5. Rate limits per IP and per payer, and a daily cap on transactions.
@@ -119,7 +124,8 @@ function networkFor(chainId: unknown): Network | undefined {
 export async function GET(req: Request) {
   const net = networkFor(new URL(req.url).searchParams.get("chainId"));
   const account = net ? usable(relayer(), net) : undefined;
-  return NextResponse.json({ enabled: Boolean(account && net?.checkout), relayer: account?.address ?? null });
+  const canPay = Boolean(account && (net?.checkout || net?.escrow));
+  return NextResponse.json({ enabled: canPay, relayer: account?.address ?? null });
 }
 
 export async function POST(req: Request) {
@@ -132,31 +138,31 @@ export async function POST(req: Request) {
     return fail("Invalid JSON.");
   }
 
-  // Only networks the app is configured for, and only their Checkout.
+  // Only networks the app is configured for, and only their own contracts.
   const net = networkFor(body.chainId);
   if (!net) return fail("This network isn't enabled in the app.");
   const account = usable(relayer(), net);
-  const checkoutAddress = net.checkout;
-  if (!account || !checkoutAddress) {
+  const action = body.action === "fundEscrow" ? "fundEscrow" : "pay";
+  const contract = action === "fundEscrow" ? net.escrow : net.checkout;
+  if (!account || !contract) {
     // Which settings are missing is useful while you build, and nobody else's business once deployed.
+    const varName = action === "fundEscrow" ? `NEXT_PUBLIC_ESCROW_${net.key.toUpperCase()}` : `NEXT_PUBLIC_CHECKOUT_${net.key.toUpperCase()}`;
     return fail(
       isDev
-        ? `Gasless mode is off on ${net.label}. Set RELAYER_PRIVATE_KEY (not an anvil key, except on local chains) and NEXT_PUBLIC_CHECKOUT_${net.key.toUpperCase()} in web/.env.local.`
+        ? `Gasless mode is off on ${net.label}. Set RELAYER_PRIVATE_KEY (not an anvil key, except on local chains) and ${varName} in web/.env.local.`
         : "Gasless mode isn't available right now. Use Standard mode.",
       503,
     );
   }
 
-  const { orderId, from, amount, validAfter, validBefore, signature } = body;
+  const { from, validAfter, validBefore, signature } = body;
   if (
-    !(typeof orderId === "string" && isHex(orderId) && orderId.length === 66) ||
     !(typeof from === "string" && isAddress(from)) ||
-    !isUint(amount) || !isUint(validAfter) || !isUint(validBefore) ||
+    !isUint(validAfter) || !isUint(validBefore) ||
     !(typeof signature === "string" && isHex(signature))
   ) {
     return fail("Malformed payment request.");
   }
-  if (BigInt(amount) !== parseUnits(priceOf(orderId), TUSD8_DECIMALS)) return fail("The amount doesn't match this order's price.");
   const now = BigInt(Math.floor(Date.now() / 1000));
   if (BigInt(validBefore) > now + MAX_WINDOW_SECONDS) return fail("Signature window is too long (max 1 hour).");
   if (limited(`payer:${from.toLowerCase()}`, PER_PAYER_PER_MINUTE)) return fail("Too many payments from this address. Wait a minute.", 429);
@@ -173,27 +179,66 @@ export async function POST(req: Request) {
   const client = createPublicClient({ chain: net.chain, transport });
   const wallet = createWalletClient({ account, chain: net.chain, transport });
 
-  const flightKey = `${net.chain.id}:${orderId.toLowerCase()}`;
-  if (!claimInFlight(flightKey)) return fail("This order is already being submitted.", 409);
-  try {
-    if (await client.readContract({ address: checkoutAddress, abi: checkoutAbi, functionName: "isPaid", args: [orderId] })) {
-      inFlight.delete(flightKey);
-      return fail("This order is already paid. Start a new order.", 409);
+  // What this call is allowed to spend comes from OUR app (priceOf) or from the chain itself
+  // (the escrow's own total) — never from the request body.
+  let flightKey: string;
+  /** Reads whatever it must (paid flag / deal state+total), so nothing trusting happens client-side. */
+  let ready: () => Promise<void>;
+  let buildCall: () => Record<string, unknown>;
+
+  if (action === "fundEscrow") {
+    const { escrowId } = body;
+    if (!(typeof escrowId === "string" && isHex(escrowId) && escrowId.length === 66)) return fail("Malformed escrow id.");
+    flightKey = `${net.chain.id}:fund:${escrowId.toLowerCase()}`;
+    ready = async () => {
+      const deal = (await client.readContract({ address: contract, abi: escrowAbi, functionName: "dealOf", args: [escrowId] })) as {
+        buyer: Address;
+        state: number;
+      };
+      if (deal.buyer.toLowerCase() !== from.toLowerCase()) throw new Error("This escrow belongs to another buyer.");
+      if (deal.state !== 1) throw new Error("This escrow isn't waiting for funding."); // only Created can be funded
+    };
+    buildCall = () => ({
+      account,
+      address: contract,
+      abi: escrowAbi,
+      functionName: "fundWithAuthorization",
+      args: [escrowId, BigInt(validAfter), BigInt(validBefore), vNum, r, s],
+    });
+  } else {
+    const { orderId, amount: rawAmount } = body;
+    if (!(typeof orderId === "string" && isHex(orderId) && orderId.length === 66) || !isUint(rawAmount)) {
+      return fail("Malformed payment request.");
     }
+    if (BigInt(rawAmount) !== parseUnits(priceOf(orderId), TUSD8_DECIMALS)) return fail("The amount doesn't match this order's price.");
+    const amount = BigInt(rawAmount);
+    flightKey = `${net.chain.id}:${orderId.toLowerCase()}`;
+    ready = async () => {
+      if (await client.readContract({ address: contract, abi: checkoutAbi, functionName: "isPaid", args: [orderId] })) {
+        throw new Error("This order is already paid. Start a new order.");
+      }
+    };
+    buildCall = () => ({
+      account,
+      address: contract,
+      abi: checkoutAbi,
+      functionName: "payWithAuthorization",
+      args: [orderId, from, amount, BigInt(validAfter), BigInt(validBefore), vNum, r, s],
+    });
+  }
+
+  if (!claimInFlight(flightKey)) return fail("This payment is already being submitted.", 409);
+  try {
+    await ready();
     if (overDailyLimit()) {
       inFlight.delete(flightKey);
       return fail("The relayer reached its daily limit. Use Standard mode.", 503);
     }
 
-    const call = {
-      account,
-      address: checkoutAddress,
-      abi: checkoutAbi,
-      functionName: "payWithAuthorization",
-      args: [orderId, from, BigInt(amount), BigInt(validAfter), BigInt(validBefore), vNum, r, s],
-    } as const;
-    await client.simulateContract(call);
-    const hash = await wallet.writeContract({ ...call, type: "legacy" });
+    // The ABI differs per action; viem only needs the right object at runtime.
+    const call = buildCall();
+    await client.simulateContract(call as never);
+    const hash = await wallet.writeContract({ ...call, type: "legacy" } as never);
     sentToday++;
     return NextResponse.json({ hash });
   } catch (e) {
@@ -203,6 +248,8 @@ export async function POST(req: Request) {
       console.error("[relay] relayer is out of gas", account.address);
       return fail("The relayer is out of gas. Use Standard mode for now.", 503);
     }
+    const msg = e instanceof Error ? e.message : "";
+    if (msg.includes("another buyer") || msg.includes("isn't waiting")) return fail(msg, 409);
     return fail(explain(e));
   }
 }

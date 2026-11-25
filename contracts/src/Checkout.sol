@@ -3,21 +3,7 @@ pragma solidity ^0.8.24;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-
-/// @notice EIP-3009 (USDC-style) signed transfers. tUSD8 on Aevum implements this.
-interface IERC3009 {
-    function receiveWithAuthorization(
-        address from,
-        address to,
-        uint256 value,
-        uint256 validAfter,
-        uint256 validBefore,
-        bytes32 nonce,
-        uint8 v,
-        bytes32 r,
-        bytes32 s
-    ) external;
-}
+import {IERC3009} from "./IERC3009.sol";
 
 /// @title Checkout
 /// @notice A minimal stablecoin checkout. Each order id can be paid once; the money goes
