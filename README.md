@@ -60,7 +60,7 @@ agent actions, revoke) · **Activity** (on-chain events) · **Docs**.
 - Token: **tUSD8** [`0x456569838f1d43009A91ebA4263147Afd7233483`](https://explorer-test.qday.info/address/0x456569838f1d43009A91ebA4263147Afd7233483) (6 decimals, EIP-3009)
 - Escrow deploy block: **3920736** (`NEXT_PUBLIC_DEPLOY_BLOCK_AEVUM`)
 - `responseWindow`: **600 s** (10 minutes for the buyer to react to filed proof)
-- Source: this repo, commit `a7ca7c3` and earlier — the explorer's verifier is broken,
+- Source: this repo, commit `a281375` — the explorer's verifier is broken,
   so verification is by source link (a known Aevum limitation, see the starter kit FAQ)
 
 ---
