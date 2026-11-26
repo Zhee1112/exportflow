@@ -16,6 +16,7 @@ import { aevumFork, checkoutAbi, isAnvilAccount, localAnvil, TUSD8_DECIMALS } fr
 import { defaultNetwork, networkByChainId, type Network } from "@/lib/env";
 import { explain } from "@/lib/errors";
 import { escrowAbi } from "@/lib/exportflow";
+import { clientIp, overLimit } from "@/lib/ratelimit";
 import { priceOf } from "@/lib/order";
 
 /**
@@ -65,19 +66,7 @@ function usable(account: PrivateKeyAccount | undefined, net: Network): PrivateKe
   return account;
 }
 
-// ---- in-memory limits (see the note at the top) ----
-const hits = new Map<string, number[]>();
-function limited(bucket: string, max: number): boolean {
-  const now = Date.now();
-  const recent = (hits.get(bucket) ?? []).filter((t) => now - t < 60_000);
-  recent.push(now);
-  hits.set(bucket, recent);
-  if (hits.size > 10_000) {
-    for (const [k, times] of hits) if (times.every((t) => now - t >= 60_000)) hits.delete(k);
-  }
-  return recent.length > max;
-}
-
+// ---- per-IP limits (shared helper; see the note at the top) ----
 let day = "";
 let sentToday = 0;
 function overDailyLimit(): boolean {
@@ -98,19 +87,6 @@ function claimInFlight(key: string): boolean {
   return true;
 }
 
-/**
- * The caller's IP. Clients can write any X-Forwarded-For they like, so never trust its first entry.
- * Set TRUSTED_IP_HEADER to the header your host sets itself (Vercel: x-vercel-forwarded-for,
- * Cloudflare: cf-connecting-ip). Otherwise this takes the entry your own proxy appended last.
- */
-function clientIp(req: Request): string {
-  const trusted = process.env.TRUSTED_IP_HEADER?.trim().toLowerCase();
-  if (trusted) return req.headers.get(trusted)?.split(",")[0]?.trim() || "unknown";
-  const xff = req.headers.get("x-forwarded-for");
-  if (xff) return xff.split(",").at(-1)?.trim() || "unknown";
-  return req.headers.get("x-real-ip")?.trim() || "unknown";
-}
-
 const isUint = (v: unknown): v is string => typeof v === "string" && /^\d{1,78}$/.test(v);
 const fail = (error: string, status = 400) => NextResponse.json({ error }, { status });
 
@@ -129,7 +105,7 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
-  if (limited(`ip:${clientIp(req)}`, PER_IP_PER_MINUTE)) return fail("Too many requests. Wait a minute.", 429);
+  if (overLimit(`ip:${clientIp(req)}`, PER_IP_PER_MINUTE)) return fail("Too many requests. Wait a minute.", 429);
 
   let body: Record<string, unknown>;
   try {
@@ -165,7 +141,7 @@ export async function POST(req: Request) {
   }
   const now = BigInt(Math.floor(Date.now() / 1000));
   if (BigInt(validBefore) > now + MAX_WINDOW_SECONDS) return fail("Signature window is too long (max 1 hour).");
-  if (limited(`payer:${from.toLowerCase()}`, PER_PAYER_PER_MINUTE)) return fail("Too many payments from this address. Wait a minute.", 429);
+  if (overLimit(`payer:${from.toLowerCase()}`, PER_PAYER_PER_MINUTE)) return fail("Too many payments from this address. Wait a minute.", 429);
 
   let v: bigint | undefined, r: Hex, s: Hex, yParity: number | undefined;
   try {

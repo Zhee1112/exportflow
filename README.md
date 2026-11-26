@@ -248,6 +248,16 @@ Faucets: Discord `/faucet <address>` (1 tQDAY + 5 tUSD8) or https://faucet.qday.
   always scanned for injection patterns regardless of whether a model is configured.
 - The relayer and seller-agent API routes re-read chain state on every call — the
   client can't dictate amounts, states or counterparties.
+- **Security headers on every response** (OWASP A05): a Content-Security-Policy
+  (`default-src 'self'`, `frame-ancestors 'none'`, no remote script origins), plus
+  `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy`,
+  `Permissions-Policy` and HSTS — configured in `web/next.config.ts`.
+- **Per-IP rate limits on all three API routes** (relay, agent, PO reader), with the
+  caller's IP taken from `TRUSTED_IP_HEADER` or the *last* `x-forwarded-for` entry —
+  never the client-controlled first one (`web/src/lib/ratelimit.ts`).
+- **Dependency audit clean:** `pnpm audit --prod` reports 0 known vulnerabilities;
+  the WalletConnect-transitive `zod`, `decode-uri-component` and `uuid` advisories are
+  pinned via `pnpm.overrides` in the root `package.json`.
 - No token issuance, no promises of returns, no malicious code.
 
 ---

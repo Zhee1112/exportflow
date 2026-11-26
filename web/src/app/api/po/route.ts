@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { parsePo, type PoFields } from "@/lib/doc";
+import { clientIp, overLimit } from "@/lib/ratelimit";
 
 /**
  * The AI document agent's reader. POST { text } -> structured PO fields + warnings.
@@ -15,12 +16,16 @@ import { parsePo, type PoFields } from "@/lib/doc";
  *    as warnings. A flagged document is never silently trusted.
  *  - The document is capped in size; no code execution, no tool calls, no network access for
  *    the document's content.
+ *  - Requests are rate limited per IP (lib/ratelimit.ts) so a caller can't burn the AI budget.
  *  - Output is fields only — the agent can never turn "the document says so" into an on-chain
  *    action without the human pressing a button in the UI.
  */
 export const runtime = "nodejs";
 
 const MAX_CHARS = 20_000;
+// Parsing is cheap, a model call is not: 10 documents/minute/IP keeps a single client
+// from burning the AI budget or the CPU. Same in-memory caveat as the other routes.
+const PER_IP_PER_MINUTE = 10;
 const fail = (error: string, status = 400) => NextResponse.json({ error }, { status });
 
 export async function GET() {
@@ -28,6 +33,8 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
+  if (overLimit(`ip:${clientIp(req)}`, PER_IP_PER_MINUTE)) return fail("Too many requests. Wait a minute.", 429);
+
   let body: Record<string, unknown>;
   try {
     body = await req.json();

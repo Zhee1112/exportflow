@@ -18,7 +18,10 @@
   "pnpm": {
     "overrides": {
       "@base-org/account": "2.2.0",
-      "ws@>=8.0.0 <8.21.0": "^8.21.0"
+      "ws@>=8.0.0 <8.21.0": "^8.21.0",
+      "zod@<4.6.6": "4.6.7",
+      "decode-uri-component@<0.5.1": "0.5.1",
+      "uuid@<11.1.1": "11.1.1"
     },
     "onlyBuiltDependencies": [
       "esbuild"

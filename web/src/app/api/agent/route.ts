@@ -5,6 +5,7 @@ import { nonceManager, privateKeyToAccount } from "viem/accounts";
 import { defaultNetwork, networkByChainId, type Network } from "@/lib/env";
 import { explain } from "@/lib/errors";
 import { escrowAbi } from "@/lib/exportflow";
+import { clientIp, overLimit } from "@/lib/ratelimit";
 
 /**
  * The seller's agent (demo counterparty "Rina"). The buyer's wallet lives in the browser;
@@ -24,14 +25,9 @@ const isDev = process.env.NODE_ENV !== "production";
 const LOCAL_CHAINS = new Set<number>([31337]);
 const ACTIONS = new Set(["evidence", "claim"]);
 
-// Minimal in-memory rate limit (same note as /api/relay: one process only).
-const hits = new Map<string, number[]>();
-function limited(bucket: string, max = 8): boolean {
-  const now = Date.now();
-  const recent = (hits.get(bucket) ?? []).filter((t) => now - t < 60_000);
-  recent.push(now);
-  hits.set(bucket, recent);
-  return recent.length > max;
+// Per-IP budget, shared helper (see lib/ratelimit.ts: one process only).
+function limited(req: Request, max = 8): boolean {
+  return overLimit(`ip:${clientIp(req)}`, max);
 }
 
 function sellerAccount(net: Network) {
@@ -60,8 +56,9 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
-  const ip = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || req.headers.get("x-real-ip") || "unknown";
-  if (limited(`ip:${ip}`)) return fail("Too many requests. Wait a minute.", 429);
+  // Never trust the first x-forwarded-for entry: the client controls it. clientIp() uses
+  // TRUSTED_IP_HEADER or the last entry (the one our proxy appended).
+  if (limited(req)) return fail("Too many requests. Wait a minute.", 429);
 
   let body: Record<string, unknown>;
   try {
